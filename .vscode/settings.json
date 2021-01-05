@@ -1,0 +1,4 @@
+{
+    "python.pythonPath": "/home/mxh/anaconda3/envs/mxh/bin/python",
+    "python.linting.pylintArgs": ["--disable=W,C,E"],
+}
