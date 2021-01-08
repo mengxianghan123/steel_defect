@@ -186,8 +186,14 @@ def evaluate_dice(model, data_loader):
                 dice_sum += 1
                 continue
             else:
+                dice_sum += (4 - len(np.unique(labels))) * 0.25
                 continue
 
+        if len(labels)==0: # 预测空白图
+            lab = targets[0]['labels'].numpy()
+            dice_sum += (4 - len(np.unique(lab))) * 0.25
+            continue
+        
         for i in range(len(labels)):
             mask_label = np.where(masks[i] == 0, 0, labels[i])
             mask_score = np.where(masks[i] == 0, 0, scores[i])
@@ -225,7 +231,7 @@ def evaluate_dice(model, data_loader):
                         [0]-np.bincount(masks_flatten_cls)[0]))
         dice = dice/4.0
         dice_sum += dice
-    return dice_sum/1000
+    return dice_sum/1000.0
 
 
 def main():
@@ -257,8 +263,7 @@ def main():
     model.to(device)
 
     params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.SGD(params, lr=0.005,
-                                momentum=0.9, weight_decay=0.0005)
+    optimizer = torch.optim.Adam(params=params,lr=0.01,betas=(0.9, 0.999),eps=1e-8)
 
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
                                                    step_size=20,
@@ -270,7 +275,8 @@ def main():
         train_one_epoch(model, optimizer, data_loader,
                         device, epoch, print_freq=100)
         lr_scheduler.step()
-
+        # model.load_state_dict(torch.load(
+        # os.path.join('result17', 'epoch'+str(epoch)+'.ckpt')))
         dice = evaluate_dice(model, data_loader_test)
         # if (epoch%5==0) and (epoch!=0):
         # if epoch == 0:
@@ -278,11 +284,12 @@ def main():
         # else:
         #     evaluate_dice(model, data_loader_test)
         # evaluate(model, data_loader_test, device=device, coco=coco)
-        if (epoch % 5 == 0):
+        if (epoch % 2 == 0):
             torch.save(model.state_dict(), 'result17/epoch'+str(epoch)+'.ckpt')
+
         with open('result17/log.txt', 'a') as f:
             f.writelines('epoch = '+str(epoch)+' : '+str(dice)+'\n')
-
+        
     print("That's it!")
 
 def dataset_check(num=0):
@@ -327,6 +334,6 @@ def dataset_check(num=0):
 if __name__ == "__main__":
     main()
     # dataset_check(2682)
-
+    
 
 
