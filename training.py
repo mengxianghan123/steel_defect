@@ -57,15 +57,15 @@ class SteelDataset(object):
             iscrowd.append(0)
 
         # 动态数据增强
-        if 1 in labels or 2 in labels or 4 in labels:
-            img, boxes, labels, masks = get_transform(img=img,
-                                                      boxes=boxes,
-                                                      labels=labels,
-                                                      masks=masks)
-        else:
-            img = np.array(img)
-            img = np.transpose(img, (2, 0, 1))
-            img = torch.as_tensor(img).div(255)
+        # if 1 in labels or 2 in labels or 4 in labels:
+        #     img, boxes, labels, masks = get_transform(img=img,
+        #                                               boxes=boxes,
+        #                                               labels=labels,
+        #                                               masks=masks)
+        # else:
+        img = np.array(img)
+        img = np.transpose(img, (2, 0, 1))
+        img = torch.as_tensor(img).div(255)
 
         boxes = torch.as_tensor(boxes, dtype=torch.float32)
         labels = torch.as_tensor(labels, dtype=torch.int64)
@@ -171,6 +171,8 @@ def evaluate_dice(model, data_loader):
     cpu_device = torch.device("cpu")
     model.eval()
     dice_sum = 0
+    fp, p = 0, 0
+    fn = 0
 
     for images, targets in tqdm(data_loader):
 
@@ -180,36 +182,39 @@ def evaluate_dice(model, data_loader):
         masks = outputs[0]['masks'].detach().cpu().numpy()
         labels = outputs[0]['labels'].detach().cpu().numpy()
         scores = outputs[0]['scores'].detach().cpu().numpy()
+        # p += len(np.unique(labels)) todo
+        if len(labels):
+            for i in range(len(labels)):
+                mask_label = np.where(masks[i] < 0.5, 0, labels[i])
+                mask_score = np.where(masks[i] < 0.5, 0, scores[i])
+            mask_max = np.argsort(mask_score, axis=0)[-1, :, :]
+            row = np.arange(1600)
+            col = np.arange(256)
+            col, row = np.meshgrid(row, col)
+            masks = mask_label[mask_max, row, col]
+        else:
+            masks = np.zeros((256,1600))
+        p += (len(np.unique(masks)) - 1)
 
         if not targets[0]: # 无瑕疵图
             if len(labels)==0:
                 dice_sum += 1
                 continue
             else:
-                dice_sum += (4 - len(np.unique(labels))) * 0.25
+                dice_sum += (5 - len(np.unique(masks))) * 0.25
+                fp += (len(np.unique(masks)) -1)
                 continue
 
         if len(labels)==0: # 预测空白图
             lab = targets[0]['labels'].numpy()
             dice_sum += (4 - len(np.unique(lab))) * 0.25
+            fn += len(np.unique(lab))
             continue
         
-        for i in range(len(labels)):
-            mask_label = np.where(masks[i] == 0, 0, labels[i])
-            mask_score = np.where(masks[i] == 0, 0, scores[i])
-        mask_max = np.argsort(mask_score, axis=0)[-1, :, :]
-        row = np.arange(1600)
-        col = np.arange(256)
-        col, row = np.meshgrid(row, col)
-        masks = mask_label[mask_max, row, col]
         masks_flatten = masks.flatten()
-
         masks_target = targets[0]['masks'].numpy()
-
         labels_target = targets[0]['labels'].numpy()[:, None, None]
-
         masks_target = masks_target * labels_target
-
         masks_target = np.sum(masks_target, axis=0)
         masks_target_flatten = masks_target.flatten()
         # visualize(images[0], masks_target, masks)
@@ -219,10 +224,14 @@ def evaluate_dice(model, data_loader):
         for cls in range(4):
             masks_flatten_cls = np.where(masks_flatten==(cls+1), 1, 0)
             masks_target_flatten_cls = np.where(masks_target_flatten==(cls+1), 1, 0)
-            if (len(np.unique(masks_flatten_cls))==1) and (len(np.unique(masks_target_flatten_cls)))==1:
+            if (len(np.unique(masks_flatten_cls))==1) and (len(np.unique(masks_target_flatten_cls))==1):
                 dice += 1
-            elif (len(np.unique(masks_flatten_cls))==1) or (len(np.unique(masks_target_flatten_cls)))==1:
+            elif (len(np.unique(masks_flatten_cls))==1) or (len(np.unique(masks_target_flatten_cls))==1):
                 dice += 0
+                if len(np.unique(masks_flatten_cls))==1:
+                    fn += 1
+                else:
+                    fp += 1
             else:
                 cm = confusion_matrix(
                 masks_flatten_cls, masks_target_flatten_cls, labels=[1])
@@ -231,7 +240,7 @@ def evaluate_dice(model, data_loader):
                         [0]-np.bincount(masks_flatten_cls)[0]))
         dice = dice/4.0
         dice_sum += dice
-    return dice_sum/1000.0
+    return dice_sum/1000.0, float(fp/p), float(fn/(4000-p))
 
 
 def main():
@@ -257,13 +266,13 @@ def main():
         collate_fn=utils.collate_fn)
 
     model = get_model_instance_segmentation(num_classes)
-    # model.load_state_dict(torch.load(
-    #     os.path.join('result1229', 'epoch20.ckpt')))
+    model.load_state_dict(torch.load(
+        os.path.join('result18', 'epoch86.ckpt')))
 
     model.to(device)
 
     params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.Adam(params=params,lr=0.01,betas=(0.9, 0.999),eps=1e-8)
+    optimizer = torch.optim.Adam(params=params,lr=0.001,betas=(0.9, 0.999),eps=1e-8)
 
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
                                                    step_size=20,
@@ -277,7 +286,7 @@ def main():
         lr_scheduler.step()
         # model.load_state_dict(torch.load(
         # os.path.join('result17', 'epoch'+str(epoch)+'.ckpt')))
-        dice = evaluate_dice(model, data_loader_test)
+        dice,fp,fn = evaluate_dice(model, data_loader_test)
         # if (epoch%5==0) and (epoch!=0):
         # if epoch == 0:
         # _, coco = evaluate(model, data_loader_test, device=device)
@@ -285,10 +294,10 @@ def main():
         #     evaluate_dice(model, data_loader_test)
         # evaluate(model, data_loader_test, device=device, coco=coco)
         if (epoch % 2 == 0):
-            torch.save(model.state_dict(), 'result17/epoch'+str(epoch)+'.ckpt')
+            torch.save(model.state_dict(), 'result19/epoch'+str(epoch)+'.ckpt')
 
-        with open('result17/log.txt', 'a') as f:
-            f.writelines('epoch = '+str(epoch)+' : '+str(dice)+'\n')
+        with open('result19/log.txt', 'a') as f:
+            f.writelines('epoch = '+str(epoch)+' : '+str(dice)+' '+str(fp)+' '+str(fn)+'\n')
         
     print("That's it!")
 
